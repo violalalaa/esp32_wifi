@@ -9,7 +9,7 @@
 ## 📈 当前进度
 
 - [x] 复制 `wifi/getting_started/station` 示例并成功编译烧录
-- [x] 成功连接 WiFi，获取 IP：`192.168.166.87`
+- [x] 成功连接 WiFi，获取 IP：`192.168.xxx.xx`
 - [x] 验证断线重连：路由器断电恢复，观察到 `WIFI_EVENT_STA_DISCONNECTED` 和自动重连过程
 
 ## 📝 今日笔记
