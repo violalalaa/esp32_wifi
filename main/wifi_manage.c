@@ -8,31 +8,17 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
+#include "wifi_manage.h"
 
-#define WIFI_SSID "viola"         
-#define WIFI_PASS "55555555"      
-#define MAXIMUM_RETRY 5
+static const char *TAG = "MY_WIFI"; 
+static int s_retry_num = 0; //重试次数
+static EventGroupHandle_t s_wifi_event_group; //事件组句柄
 
-static const char *TAG = "MY_WIFI";
-static int s_retry_num = 0;
-static EventGroupHandle_t s_wifi_event_group;
+#define WIFI_CONNECTED_BIT BIT0 //连接成功位
+#define WIFI_FAIL_BIT      BIT1 //连接失败位
 
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
-static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
-void wifi_init_sta(void);
-
-void app_main(void) 
-{
-    esp_err_t ret = nvs_flash_init();
-    if(ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-    ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
-    wifi_init_sta();
-}
+static void event_handler(void *arg, esp_event_base_t event_base,
+                          int32_t event_id, void *event_data); //事件处理回调
 
 void wifi_init_sta(void)
  {
@@ -42,7 +28,7 @@ void wifi_init_sta(void)
     esp_netif_create_default_wifi_sta(); //创建默认wifi station接口
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT(); //初始化wifi配置
     ESP_ERROR_CHECK(esp_wifi_init(&cfg)); //初始化wifi
-    
+
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL)); //注册wifi事件处理回调
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL)); //注册ip事件处理回调
 
@@ -53,8 +39,8 @@ void wifi_init_sta(void)
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config)); //设置wifi配置
-    ESP_ERROR_CHECK(esp_wifi_start()); //启动wifi
-    ESP_ERROR_CHECK(esp_wifi_connect()); //连接wifi
+    /* start 是异步的：驱动就绪后会发 WIFI_EVENT_STA_START，connect 放在回调里做 */
+    ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "wifi_init_sta finished.");
 
     EventBits_t bits = xEventGroupWaitBits(
@@ -66,16 +52,15 @@ void wifi_init_sta(void)
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "connected to ap SSID:%s", WIFI_SSID);//连接成功
     } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s", WIFI_SSID);//连接失败
+        ESP_LOGI(TAG, "Failed to connect to SSID:%s", WIFI_SSID);//连接失败
     } else {
         ESP_LOGI(TAG, "UNEXPECTED EVENT");//其他事件
     }
 }
-
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) 
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        esp_wifi_connect(); /* 第一次连接：驱动就绪后才 connect */
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_retry_num < MAXIMUM_RETRY) {
             esp_wifi_connect();
@@ -91,4 +76,25 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
+}
+
+int wifi_get_retry_count(void) //获取重试次数
+{
+    return s_retry_num; //返回重试次数
+}
+
+bool wifi_get_ip(esp_netif_ip_info_t *ip) //获取IP地址
+{
+    if (!ip) {
+        return false; //如果ip为空，返回false
+    }
+    /* WIFI_STA_DEF 是 esp_netif_create_default_wifi_sta() 创建的默认网卡名 */
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"); //获取网卡句柄
+    if (!netif) {
+        return false; //如果netif为空，返回false
+    }
+    if (esp_netif_get_ip_info(netif, ip) != ESP_OK) {
+        return false; //如果获取ip失败，返回false
+    }
+    return ip->ip.addr != 0; //如果ip不为0，返回true    
 }

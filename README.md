@@ -18,3 +18,82 @@
 2. **回调为什么不能做重活**：event_handler 跑在这条事件循环任务里，卡住它，后面的 WIFI_EVENT / IP_EVENT 就发不出去，所以这里只该做 esp_wifi_connect()、改计数、置 event group 这种轻操作。
 3. **重连在哪触发**：断开时驱动发 WIFI_EVENT_STA_DISCONNECTED，进 event_handler 后若 s_retry_num 还没到上限，就再调一次 esp_wifi_connect()，重连就是在这里触发的。
 
+# ESP32 WiFi 初始项目说明
+
+## 一、启动流程
+
+`app_main()` 是程序入口，主要完成 NVS 初始化、WiFi 初始化，并创建三个 FreeRTOS 任务。
+
+```text
+app_main()
+  │
+  ├─ nvs_flash_init()                 // 初始化 NVS
+  │
+  ├─ wifi_init_sta()                  // 调用 wifi_manage.c 里的函数
+  │    ├─ 创建事件组
+  │    ├─ 初始化 netif / event loop / WiFi
+  │    ├─ 注册 event_handler
+  │    ├─ 配置 WIFI_SSID / WIFI_PASS
+  │    ├─ esp_wifi_start()
+  │    └─ xEventGroupWaitBits()        // 等待连接成功或失败
+  │
+  ├─ xTaskCreate(wifi_monitor_task)
+  │    └─ 循环：
+  │         ├─ wifi_get_retry_count()  // 来自 wifi_manage.c
+  │         └─ wifi_get_ip(&ip)        // 来自 wifi_manage.c
+  │
+  ├─ xTaskCreate(sensor_task)
+  │
+  └─ xTaskCreate(led_task)
+```
+
+## 二、流程示意图
+
+```mermaid
+flowchart TD
+    A["app_main()"] --> B["nvs_flash_init()<br/>初始化 NVS"]
+    A --> C["wifi_init_sta()<br/>wifi_manage.c"]
+
+    C --> C1["创建事件组"]
+    C --> C2["初始化 netif / event loop / WiFi"]
+    C --> C3["注册 event_handler"]
+    C --> C4["配置 WIFI_SSID / WIFI_PASS"]
+    C --> C5["esp_wifi_start()"]
+    C --> C6["xEventGroupWaitBits()<br/>等待连接成功或失败"]
+
+    A --> D["xTaskCreate(wifi_monitor_task)"]
+    D --> D1["循环"]
+    D1 --> D2["wifi_get_retry_count()"]
+    D1 --> D3["wifi_get_ip(&amp;ip)"]
+
+    A --> E["xTaskCreate(sensor_task)"]
+    A --> F["xTaskCreate(led_task)"]
+```
+
+## 三、任务与函数说明
+
+| 任务 / 函数 | 所属模块 | 说明 |
+|---|---|---|
+| `nvs_flash_init()` | 系统 | 初始化 NVS 非易失存储 |
+| `wifi_init_sta()` | `wifi_manage.c` | 初始化 WiFi STA 模式，并等待连接结果 |
+| `wifi_monitor_task` | 应用任务 | 循环获取 WiFi 重试次数和 IP |
+| `sensor_task` | 应用任务 | 传感器采集或处理任务 |
+| `led_task` | 应用任务 | LED 状态指示任务 |
+
+## 四、WiFi 初始化流程
+
+1. 创建事件组
+2. 初始化 `netif`、event loop、WiFi
+3. 注册 `event_handler`
+4. 配置 `WIFI_SSID` / `WIFI_PASS`
+5. 调用 `esp_wifi_start()`
+6. 使用 `xEventGroupWaitBits()` 等待连接成功或失败
+
+## 五、备注
+
+- `wifi_get_retry_count()` 和 `wifi_get_ip()` 来自 `wifi_manage.c`
+- 任务创建顺序为：
+  1. `wifi_monitor_task`
+  2. `sensor_task`
+  3. `led_task`
+
