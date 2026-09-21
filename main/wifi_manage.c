@@ -42,20 +42,27 @@ void wifi_init_sta(void)
     /* start 是异步的：驱动就绪后会发 WIFI_EVENT_STA_START，connect 放在回调里做 */
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "wifi_init_sta finished.");
+}
 
+bool wifi_wait_connected(void)
+{
+    /* GOT_IP / 失败由 event_handler 置位；main 在这里等，不要在 WiFi 回调里启动 MQTT */
     EventBits_t bits = xEventGroupWaitBits(
-        s_wifi_event_group,                    // 要等待的事件组句柄
-      WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,    // 关心的位：连上 或 失败（任一即可）
-      pdFALSE,                               // 返回时不清除这些位（pdTRUE 才会清）
-      pdFALSE,                               // 不等“全部置位”，任一位置位就返回
-      portMAX_DELAY);                        // 一直阻塞等到有结果（无限等待）
+        s_wifi_event_group,
+        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+        pdFALSE,
+        pdFALSE,
+        portMAX_DELAY);
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s", WIFI_SSID);//连接成功
-    } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s", WIFI_SSID);//连接失败
-    } else {
-        ESP_LOGI(TAG, "UNEXPECTED EVENT");//其他事件
+        ESP_LOGI(TAG, "connected to ap SSID:%s", WIFI_SSID);
+        return true;
     }
+    if (bits & WIFI_FAIL_BIT) {
+        ESP_LOGI(TAG, "Failed to connect to SSID:%s", WIFI_SSID);
+        return false;
+    }
+    ESP_LOGI(TAG, "UNEXPECTED EVENT");
+    return false;
 }
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) 
 {

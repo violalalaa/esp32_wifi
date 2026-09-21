@@ -1,9 +1,11 @@
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "wifi_manage.h"
+#include "mqtt_manage.h"
 
 static const char *TAG = "MAIN";
 
@@ -13,7 +15,7 @@ static const char *TAG = "MAIN";
  */
 #define LED_GPIO GPIO_NUM_2
 
-/* 任务函数签名必须是 void (*)(void *)，和 STM32 CubeMX 生成的 StartXxxTask 一样 */
+/* 每 5 秒查一次 IP / 重连次数，只看状态不改连接 */
 static void wifi_monitor_task(void *arg)
 {
     (void)arg;
@@ -25,25 +27,32 @@ static void wifi_monitor_task(void *arg)
         } else {
             ESP_LOGI(TAG, "wifi: disconnected retry=%d", retry);
         }
-        /* ESP-IDF 默认 1 tick=10ms，必须用 pdMS_TO_TICKS，不要写 vTaskDelay(5000) */
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
+/* 每 10 秒拼假 JSON，交给 mqtt_publish_status；MQTT 连没连上由那边判断 */
 static void sensor_task(void *arg)
 {
     (void)arg;
-    int fake_temp = 250; /* 25.0℃，用整数避免拉进浮点库 */
+    char json[64];
+    int fake_temp = 255; /* 25.5℃，整数避免浮点 */
+    int fake_hum = 60;
+
     for (;;) {
+        snprintf(json, sizeof(json), "{\"temp\": %d.%d, \"hum\": %d}",
+                 fake_temp / 10, fake_temp % 10, fake_hum);
+        /* 只发 JSON，不在这里碰 MQTT client；没连上时函数内部直接 return */
+        mqtt_publish_status(json);
         fake_temp++;
         if (fake_temp > 300) {
             fake_temp = 250;
         }
-        ESP_LOGI(TAG, "sensor: temp=%d.%d C", fake_temp / 10, fake_temp % 10);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
+/* 每 1 秒翻转 GPIO，和网络无关，断网也继续闪 */
 static void led_task(void *arg)
 {
     (void)arg;
@@ -60,7 +69,9 @@ static void led_task(void *arg)
 
 void app_main(void)
 {
-    /* 进 app_main 时 FreeRTOS 已经在跑，这里本身就是一个任务（不像 STM32 还要 osKernelStart） */
+    /* 进这里时 FreeRTOS 已经在跑；本函数跑完返回，main_task 会被删掉 */
+
+    /* WiFi 驱动要把校准数据写 Flash，必须先初始化 NVS */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -69,13 +80,19 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
-    wifi_init_sta(); /* 内部 WaitBits，连上或失败后才往下创建任务 */
+    /* 只搭栈、注册回调、esp_wifi_start()，马上返回；真正 connect 在 WiFi 回调里 */
+    wifi_init_sta();
+    /* 阻塞：等 GOT_IP（CONNECTED_BIT）或重试耗尽（FAIL_BIT） */
+    if (wifi_wait_connected()) {
+        /* 有 IP 才 start MQTT，且只这一次；之后断线由 MQTT 内部自己重连 */
+        mqtt_app_start();
+    } else {
+        ESP_LOGE(TAG, "wifi failed, skip mqtt");
+    }
 
-    /*
-     * xTaskCreate 参数：函数, 名字, 栈字节数, 参数, 优先级, 句柄
-     * 栈是字节不是 word；打日志的任务给大一点。优先级 5 低于 WiFi/LwIP 系统任务。
-     */
+    /* 栈单位是字节；优先级 5 低于 WiFi/LwIP，避免抢协议栈 */
     xTaskCreate(wifi_monitor_task, "wifi_mon", 4096, NULL, 5, NULL);
-    xTaskCreate(sensor_task, "sensor", 2048, NULL, 5, NULL);
+    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
     xTaskCreate(led_task, "led", 2048, NULL, 5, NULL);
-}   
+    /* 三个任务接着跑：断网时 WiFi 回调重连 AP，MQTT 内部重连 Broker */
+}

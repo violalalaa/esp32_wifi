@@ -9,6 +9,8 @@
 #define MAXIMUM_RETRY 5
 
 void wifi_init_sta(void);
+/* 阻塞等到 GOT_IP 或失败；成功返回 true。给 main 用来决定要不要启动 MQTT */
+bool wifi_wait_connected(void);
 
 /* 给其它任务查询用：s_retry_num 是 wifi_manage.c 里的 static，外面不能直接读 */
 int wifi_get_retry_count(void);
