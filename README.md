@@ -152,3 +152,37 @@ WiFi 重新拿到 IP
 
 > 记住一句话：  
 > **WiFi 管连网，MQTT 管消息；掉线各自重连，应用只启动一次。**
+
+## MQTT 触发 OTA 笔记
+
+板子打印 `Version 2.0` 才算升级成功。电脑上的源码、`build` 里的 bin、芯片里正在跑的程序，是三份东西。
+
+### 分区
+
+- 必须有 `ota_0`、`ota_1`。只有一块 `factory` 时，串口报 `Passive OTA partition could not be found`。
+- `menuconfig` → **Partition Table** → **Factory app, two OTA definitions**。
+- 双 OTA 大约 3.1MB。Flash 还设成 2MB 时，分区表生成失败，固件根本烧不进去。改成 8MB：**Serial Flasher Config** → Flash size。
+- `idf.py erase-flash` 在工程根目录执行即可。擦除只清空 Flash，不会改分区表。
+- 擦空后反复复位会刷 `invalid header: 0xffffffff`，电脑一直叮咚。按住 BOOT，点 RST，松开 BOOT，再执行 `idf.py -p COM4 flash`。只按 RST 还会继续空转。
+- 分区表示例：`factory` 在 `0x10000`，`ota_0` 在 `0x110000`，`ota_1` 在 `0x210000`，各 1MB。`otadata` 决定下次启动哪一块。不要随便执行 `partition-table-flash`。
+
+### 版本怎么看
+
+- `Version 1.0` 在 `app_main` 最开头。监视器中途打开会错过，按 RST 从头看。
+- USB 烧录写的是当时编出来的 bin。想演示「1.0 升到 2.0」：先烧 1.0，再把日志改成 2.0，只 `idf.py build`，不要再 flash。
+- 板子仍打印 1.0，只说明芯片里还是旧程序。`build\esp32_wifi.bin` 里已经可以是 2.0。
+
+### HTTP 服务器
+
+- 在 `build` 目录里执行 `python -m http.server 8070`。在工程根目录开，访问 `/esp32_wifi.bin` 会 404。
+- 浏览器能下到文件再发给板子。网址形如 `http://192.168.x.x:8070/esp32_wifi.bin`。电脑和板子要在同一个热点。
+- 不要删 bin。重新 build 会覆盖它。服务开着时，下一次下载拿到的就是新文件。
+- 日志里的 `GET ... 200` 只表示文件传完了，不表示已经换固件。
+
+### MQTT
+
+- 收网址的事件是 `MQTT_EVENT_DATA`，不是 `HTTP_EVENT_ON_DATA`。
+- `CONNECTED` 里订阅 `esp32/viola/ota`。断线重连后要再订。
+- `topic` 和 `data` 都没有 `\0`，按 `topic_len`、`data_len` 拷贝后再 `ota_request()`。
+- MQTTX 用 **Publish** 发纯文本网址，不要停在 Subscribe 页。
+- 订阅完成（日志里有 `subscribe esp32/viola/ota`）之前发出去的消息，Broker 不保存，直接丢。所以要等这行出现再 Publish。多按几次，是因为总有一次落在订阅之后。
