@@ -4,6 +4,7 @@
 #include "esp_event.h"
 #include "mqtt_client.h"
 #include "mqtt_manage.h"
+#include "ota_manage.h"
 
 static const char *TAG = "MQTT_MANAGER";
 /* 客户端句柄：init 成功后一直复用。WiFi 再 GOT_IP 也不要重新 init */
@@ -34,6 +35,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
         /* retain=1：后打开 MQTTX 订阅也能立刻看到在线 */
         esp_mqtt_client_publish(client, MQTT_STATUS_TOPIC, "{\"online\":1}", 0, 1, 1);
+        /* 断线重连后会话是干净的，必须再订一次，否则收不到升级 URL */
+        esp_mqtt_client_subscribe(client, MQTT_OTA_TOPIC, 1);
+        ESP_LOGI(TAG, "subscribe %s", MQTT_OTA_TOPIC);
         break;
     case MQTT_EVENT_DISCONNECTED:
         /* 只记录。重连由客户端内部做，不要在这里再调 mqtt_app_start() */
@@ -44,9 +48,22 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
         break;
     case MQTT_EVENT_DATA:
-        /* 别人发到本机已订阅主题才会来；当前没 subscribe，一般不会进 */
+        /* topic/data 都没有 '\\0'，长度分别是 topic_len、data_len */
         ESP_LOGI(TAG, "MQTT_EVENT_DATA TOPIC=%.*s DATA=%.*s",
                  event->topic_len, event->topic, event->data_len, event->data);
+        if (event->topic_len == (int)strlen(MQTT_OTA_TOPIC) &&
+            strncmp(event->topic, MQTT_OTA_TOPIC, event->topic_len) == 0 &&
+            event->data_len > 0) {
+            char url[256];
+            int n = event->data_len;
+            if (n >= (int)sizeof(url)) {
+                n = sizeof(url) - 1;
+            }
+            memcpy(url, event->data, n);
+            url[n] = '\0';
+            /* xQueueSend 超时为 0，不堵住这条 MQTT 回调 */
+            ota_request(url);
+        }
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");

@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "wifi_manage.h"
 #include "mqtt_manage.h"
+#include "ota_manage.h"
 
 static const char *TAG = "MAIN";
 
@@ -70,6 +71,7 @@ static void led_task(void *arg)
 void app_main(void)
 {
     /* 进这里时 FreeRTOS 已经在跑；本函数跑完返回，main_task 会被删掉 */
+    ESP_LOGI(TAG, "Version 2.0"); /* 旧固件标记；做 B 版时改成 2.0，只 build 不 USB 烧录 */
 
     /* WiFi 驱动要把校准数据写 Flash，必须先初始化 NVS */
     esp_err_t ret = nvs_flash_init();
@@ -86,6 +88,8 @@ void app_main(void)
     if (wifi_wait_connected()) {
         /* 有 IP 才 start MQTT，且只这一次；之后断线由 MQTT 内部自己重连 */
         mqtt_app_start();
+        /* 只挂起等待；真正下载要别处调用 ota_request(url) */
+        ota_init();
     } else {
         ESP_LOGE(TAG, "wifi failed, skip mqtt");
     }
