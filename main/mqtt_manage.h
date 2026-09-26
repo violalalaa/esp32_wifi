@@ -2,7 +2,7 @@
 #define MQTT_MANAGE_H
 
 /* mqtt:// 明文 1883，不是 mqtts://。须和 MQTTX 填的 Broker 一致 */
-#define MQTT_BROKER_URI   "mqtt://broker.emqx.io"
+#define MQTT_BROKER_URI   "mqtt://test.mosquitto.org"
 #define MQTT_STATUS_TOPIC "esp32/viola/status"
 #define MQTT_OTA_TOPIC "esp32/viola/ota"
 /* 有 IP 之后由 main 调用一次。start 是异步的，连没连上要看 MQTT_EVENT_CONNECTED */

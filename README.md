@@ -186,3 +186,24 @@ WiFi 重新拿到 IP
 - `topic` 和 `data` 都没有 `\0`，按 `topic_len`、`data_len` 拷贝后再 `ota_request()`。
 - MQTTX 用 **Publish** 发纯文本网址，不要停在 Subscribe 页。
 - 订阅完成（日志里有 `subscribe esp32/viola/ota`）之前发出去的消息，Broker 不保存，直接丢。所以要等这行出现再 Publish。多按几次，是因为总有一次落在订阅之后。
+## OTA 失败回滚测试
+
+新固件启动就崩溃时，板子会自己回到上一份能启动的程序。这次好固件是工厂分区里的 `Version 2.0`，坏固件写进旁边的 `ota_0`，原来的 2.0 没有被盖掉。
+
+### 触发条件
+
+- `menuconfig` → **Bootloader config** → 打开 **Enable app rollback support**。回滚逻辑在 bootloader 里，不在 `ota_manage.c`。打开之后要先 USB 烧一次还能启动的 2.0，bootloader 才会换上。坏固件只 `idf.py build`，不要 USB 烧，也不要 `erase-flash`。
+- `app_main` 最开头打印 `版本 3.0 - BAD`，接着 `int *p = NULL; *p = 123;`。确认函数 `esp_ota_mark_app_valid_cancel_rollback()` 来不及调用。
+- 打印后马上崩，USB 串口会在重启空档里丢掉这行。两边各 `vTaskDelay` 3 秒，监视器才看得清。
+
+### 现象
+
+- 板上 Broker 是 `mqtt://test.mosquitto.org`。MQTTX 要连这一台，端口 `1883`。主题 `esp32/viola/ota`，等日志出现 `subscribe esp32/viola/ota` 再 **Publish** 网址。
+- 浏览器下载 bin 只发生在电脑上，串口不会动。板子收到后才有 `MQTT_EVENT_DATA`、`queued`、`download`，然后 `Writing to <ota_0> partition at offset 0x110000`。
+- `OTA succeed, rebooting` 之后第一次启动进 `ota_0`：`版本 3.0 - BAD`，接着 `Guru Meditation Error`，`StoreProhibited`，`EXCVADDR: 0x00000000`，回溯在 `main.c` 的 `*p = 123`。然后 `Rebooting...`，`rst:0xc (RTC_SW_CPU_RST)`。
+- 第二次启动时 bootloader 看到这块新程序仍是待确认，把 `otadata`（`0xd000`）改回工厂分区 `0x10000`。后面一直是 `Loaded app from partition at offset 0x10000` 和 `Version 2.0`。
+- 3.0 的数据还在 `ota_0`（`0x110000`）里，只是不会再被选中。按 RST 看到的也是 2.0。
+
+### 结论
+
+OTA 失败时设备回到上一份能启动的固件，不会变砖。`esp_https_ota()` 只负责写入空闲分区并重启；选哪一块启动，由 bootloader 看 `otadata` 决定。
