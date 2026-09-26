@@ -4,8 +4,7 @@
 #include <stdbool.h>
 #include "esp_netif.h"
 
-#define WIFI_SSID "viola"
-#define WIFI_PASS "55555555"
+/* 账号密码在 NVS 命名空间 wifi_cfg，键名 ssid / pass。没有记录时走 SmartConfig。 */
 #define MAXIMUM_RETRY 5
 
 void wifi_init_sta(void);

@@ -207,3 +207,36 @@ WiFi 重新拿到 IP
 ### 结论
 
 OTA 失败时设备回到上一份能启动的固件，不会变砖。`esp_https_ota()` 只负责写入空闲分区并重启；选哪一块启动，由 bootloader 看 `otadata` 决定。
+
+
+## SmartConfig 配网笔记
+
+热点账号不再写在程序里。存在 NVS 命名空间 `wifi_cfg`，键名 `ssid` 和 `pass`。`main.c` 没改：有 IP 之后仍由 `wifi_wait_connected()` 返回，再启动 MQTT。
+
+### 有账号和没账号
+
+- 没账号：`wifi_cfg` 里没有 `ssid`。出厂或 `erase-flash` 之后是这种。`WIFI_EVENT_STA_START` 里不调用 `esp_wifi_connect()`，改走 `esp_smartconfig_start()`，类型 `SC_TYPE_ESPTOUCH`。
+- 有账号：以前配通过，并且 `nvs_commit()` 已经写进 Flash。复位后再进 `STA_START`，直接 `esp_wifi_connect()`，不再打开 SmartConfig。
+- `s_ssid`、`s_pass` 只是内存副本。`nvs_set_str()` 只写缓存，不 `nvs_commit()` 的话掉电就丢，下次又会进配网。
+
+### 事件各走各的
+
+`event_handler` 里多注册了一路 `SC_EVENT`。一次调用只进一个分支。
+
+- `WIFI_EVENT_STA_START`：驱动就绪。有账号就连接，没账号就配网。
+- `WIFI_EVENT_STA_DISCONNECTED`：某次连接失败或中途掉线，不是“驱动没就绪”。配网期间没有密码，直接 return，否则空密码会失败 5 次并置 `WIFI_FAIL_BIT`，`main` 会跳过 MQTT。已有账号时仍按最多 5 次重试。
+- `SC_EVENT_GOT_SSID_PSWD`：手机把 SSID 和密码发来了。写入 `wifi_cfg` 并 commit，然后 `esp_wifi_connect()`。这里不置事件位。
+- `SC_EVENT_SEND_ACK_DONE`：板子已经应答手机，这时 `esp_smartconfig_stop()`。App 上才会显示成功。
+- `IP_EVENT_STA_GOT_IP`：直连和配网最后都到这里，置原来的 `WIFI_CONNECTED_BIT`。没有新加信号量。
+
+### 手机怎么填
+
+- 跑 EspTouch 的那部手机必须已经连上要配的热点。开热点的那部手机连不上自己的热点，不能自己发包。
+- App 里的 SSID、BSSID 是它从当前 WiFi 读出来的，不用手填。密码填该热点的密码。设备数量填 1。选 **广播**，对应固件里的 `SC_TYPE_ESPTOUCH`。
+- 先看串口出现 `NVS没有WiFi信息，启动SmartConfig配网...`，再在 App 里开始。
+
+### 这次测到的日志
+
+- 配网：`TYPE: ESPTOUCH`，`ssid: viola`，`pswd: 55555555`，然后 `MY_WIFI: got ssid:viola`，`wifi:connected with viola`。
+- 再按 RST：应打印 `NVS读取到SSID，直连...`，不再进入 SmartConfig。
+- 要重做第一次配网：`idf.py -p COM4 erase-flash` 会把 `wifi_cfg` 一起清掉。擦完若刷 `invalid header: 0xffffffff`，按住 BOOT，点 RST，松开 BOOT，再 flash。

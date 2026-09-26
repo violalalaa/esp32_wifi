@@ -70,14 +70,7 @@ static void led_task(void *arg)
 
 void app_main(void)
 {
-    /* 进这里时 FreeRTOS 已经在跑；本函数跑完返回，main_task 会被删掉 */
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    ESP_LOGI(TAG, "版本 3.0 - BAD");
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    int *p = NULL;
-    *p = 123;
-    /* 后面原来的代码不动 */
-    /* WiFi 驱动要把校准数据写 Flash，必须先初始化 NVS */
+    ESP_LOGI(TAG, "版本 2.0 ");
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
