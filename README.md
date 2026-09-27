@@ -265,3 +265,38 @@ CPU 在空闲时打盹，Wi-Fi 和 MQTT 仍走原来的连接。`led_task`、`se
 - 再等大约 90 秒：`wifi: ip=` 和温度 JSON 各约 3 次，间隔 30 秒，每次发布都有 `MQTT_EVENT_PUBLISHED`。`retry` 不要一直增加。
 - MQTTX 连 `test.mosquitto.org:1883`，订阅 `esp32/viola/status`，应收到 `{"temp": ...}`。
 - 再按一次 RST，仍是直连，不用 EspTouch。不要为了这次测试去 `erase-flash`。
+
+## MPU6050 笔记
+
+假温度换成 MPU6050 的三轴加速度。`sensor_task` 仍是 30 秒一次，只拿 JSON 去调 `mqtt_publish_status()`。I2C 句柄、寄存器、唤醒和睡眠都在 `mpu_manage.c` 里，和 `wifi_manage` 一样，外面只调两个函数。
+
+### 为什么不用官方组件
+
+- `idf.py add-dependency "espressif/mpu6050^1.2.1"` 能下到 1.2.1，但 ESP-IDF 5.5.5 已经没有 `driver/i2c.h`。组件源文件还在包含它，编译停在 `fatal error: driver/i2c.h: No such file or directory`。
+- 这个组件标的是 as-is，不再改。工程里改用 IDF 自带的 `driver/i2c_master.h`。`main/CMakeLists.txt` 的 `PRIV_REQUIRES` 加 `esp_driver_i2c`，不要再写 `i2c_bus` 或 `mpu6050`。
+
+### 接线
+
+- VCC 接 3V3，GND 和开发板共地。SDA 接 GPIO8，SCL 接 GPIO9。AD0 接 GND，地址是 `0x68`。AD0 接到 3V3 时，把 `mpu_manage.h` 里的 `MPU_I2C_ADDR` 改成 `0x69`。
+- INT 不用接。GY-521 板上一般有上拉，程序里内部上拉也开着，时钟 100kHz。
+- 改引脚只改头文件里的 `MPU_SDA_GPIO`、`MPU_SCL_GPIO`。
+
+### 调用关系
+
+- `mpu_init()`：建 I2C 总线，读 WHO_AM_I（寄存器 `0x75`，应是 `0x68`）。对得上就写 `PWR_MGMT_1`（`0x6B`）唤醒再睡下。失败只返回错误，`sensor_task` 打日志后 `vTaskDelete`，WiFi 和 MQTT 继续跑。
+- `mpu_read_json()`：写 `0x00` 唤醒，等 100ms，从 `0x3B` 读 6 字节加速度，再写 `0x40` 睡回去。醒着大约 3.8mA，30 秒才读一次，不睡的话 Light Sleep 省的电会被它吃掉。
+- 量程用上电默认的 ±2g，16384 LSB = 1g。拼 JSON 用整数两位小数，避免 `printf` 浮点。负号只放在整数部分。
+- 主题还是 `esp32/viola/status`。内容不再是 `{"temp","hum"}`，而是 `{"ax","ay","az"}`，单位是 g。
+
+### 线接错时长什么样
+
+- WiFi、MQTT 都正常：`got ip`、`light sleep enabled`、`MQTT_EVENT_CONNECTED`。紧接着 `MPU: whoami=0x00 err=ESP_ERR_INVALID_STATE`，`MAIN: MPU6050 init failed`。
+- `0x00` 是一个字节都没读到。`ESP_ERR_INVALID_STATE` 是 5.5 这套 I2C 驱动在传输没完成时的返回值，默认日志不会另打一行 NACK。`app_main` 返回后大约 1 秒才报错，对得上代码里那次 1000ms 超时：总线等了一秒，没有 ACK。
+- 这次是 SDA/SCL 接错。共地、3V3、AD0 电平不对，也会停在同一行。
+
+### 怎样算通过
+
+- 按 RST：`MPU: ready addr=0x68`，大约 100ms 后 `MPU: imu {"ax": -0.24, "ay": 0.54, "az": -0.81}`。
+- 同一条 JSON 出现在 `publish ... topic=esp32/viola/status`，后面有对应 `msg_id` 的 `MQTT_EVENT_PUBLISHED`。
+- 三轴平方和大约是 1，说明读到的是重力，板子是斜着的。平放时一根轴接近 `1.00` 或 `-1.00`，另外两根接近 `0`。侧过来，接近 1 的那根会掉下去，另一根升到 1 附近。
+- 之后仍是 30 秒一次。MQTT 没连上时，`imu` 这行日志还在，`mqtt_publish_status()` 自己返回。

@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -8,6 +7,7 @@
 #include "wifi_manage.h"
 #include "mqtt_manage.h"
 #include "ota_manage.h"
+#include "mpu_manage.h"
 
 static const char *TAG = "MAIN";
 
@@ -33,22 +33,21 @@ static void wifi_monitor_task(void *arg)
     }
 }
 
-/* 每 30 秒拼假 JSON，交给 mqtt_publish_status；MQTT 连没连上由那边判断 */
+/* 每 30 秒读一次加速度，交给 mqtt_publish_status；MQTT 连没连上由那边判断 */
 static void sensor_task(void *arg)
 {
     (void)arg;
-    char json[64];
-    int fake_temp = 255; /* 25.5℃，整数避免浮点 */
-    int fake_hum = 60;
+    char json[96];
+
+    if (mpu_init() != ESP_OK) {
+        ESP_LOGE(TAG, "MPU6050 init failed");
+        vTaskDelete(NULL);
+        return;
+    }
 
     for (;;) {
-        snprintf(json, sizeof(json), "{\"temp\": %d.%d, \"hum\": %d}",
-                 fake_temp / 10, fake_temp % 10, fake_hum);
-        /* 只发 JSON，不在这里碰 MQTT client；没连上时函数内部直接 return */
-        mqtt_publish_status(json);
-        fake_temp++;
-        if (fake_temp > 300) {
-            fake_temp = 250;
+        if (mpu_read_json(json, sizeof(json)) == ESP_OK) {
+            mqtt_publish_status(json);
         }
         vTaskDelay(pdMS_TO_TICKS(30000));
     }
@@ -111,7 +110,7 @@ void app_main(void)
 
     /* 栈单位是字节；优先级 5 低于 WiFi/LwIP，避免抢协议栈 */
     xTaskCreate(wifi_monitor_task, "wifi_mon", 4096, NULL, 5, NULL);
-    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
+    xTaskCreate(sensor_task, "sensor", 6144, NULL, 5, NULL);
     xTaskCreate(led_task, "led", 2048, NULL, 5, NULL);
     /* 三个任务接着跑：断网时 WiFi 回调重连 AP，MQTT 内部重连 Broker */
 }
