@@ -115,6 +115,7 @@ void wifi_init_sta(void)
     }
     /* start 是异步的：驱动就绪后会发 WIFI_EVENT_STA_START，connect 或配网放在回调里做 */
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* 配网和 DHCP 期间保持 WIFI_PS_NONE。MIN_MODEM 等到 GOT_IP 再开，避免还没拿到地址就进省电。 */
     ESP_LOGI(TAG, "wifi_init_sta finished.");
 }
 
@@ -185,6 +186,8 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        /* 有地址后再按 DTIM 省电，MQTT 心跳还能过。空闲时 CPU 才进得了 Light Sleep。 */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         s_retry_num = 0;
         /* 直连和配网都走到这里。main 只等这一位，所以不用新的信号量 */
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);

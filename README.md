@@ -240,3 +240,28 @@ OTA 失败时设备回到上一份能启动的固件，不会变砖。`esp_https
 - 配网：`TYPE: ESPTOUCH`，`ssid: viola`，`pswd: 55555555`，然后 `MY_WIFI: got ssid:viola`，`wifi:connected with viola`。
 - 再按 RST：应打印 `NVS读取到SSID，直连...`，不再进入 SmartConfig。
 - 要重做第一次配网：`idf.py -p COM4 erase-flash` 会把 `wifi_cfg` 一起清掉。擦完若刷 `invalid header: 0xffffffff`，按住 BOOT，点 RST，松开 BOOT，再 flash。
+
+## Light Sleep 笔记
+
+CPU 在空闲时打盹，Wi-Fi 和 MQTT 仍走原来的连接。`led_task`、`sensor_task`、`wifi_monitor_task` 都改成 30 秒一次。1 秒闪灯、5 秒打印、10 秒发温度，会把刚要睡的 CPU 马上叫醒。
+
+### 什么时候才允许睡
+
+- NVS 初始化之后先 `esp_pm_configure()`：最高 80MHz，最低 40MHz，`light_sleep_enable` 先设 `false`。启动时 `main` 正堵在等 IP，系统几乎空闲，这时就睡会打断 DHCP。
+- `WIFI_PS_MIN_MODEM` 放在 `IP_EVENT_STA_GOT_IP` 里，也就是 `got ip` 之后。`esp_wifi_start()` 里不要开。日志里 `wifi:Set ps type: 1` 必须出现在 `got ip` 后面。
+- `wifi_wait_connected()` 返回之后，再把 `light_sleep_enable` 设成 `true`。串口应出现 `Light sleep: ENABLED` 和 `MAIN: light sleep enabled`，然后才是 `mqtt_app_start`。
+- `MIN_MODEM` 按热点的 DTIM 醒来收包，MQTT 心跳还能过。没改成 `WIFI_PS_MAX_MODEM`，那种更容易把长连接撑掉。
+
+### 串口为什么会像死了
+
+- 睡早了的时候，日志停在 `wifi:connected with viola` 和 `wifi:pm start, type: 1`，后面没有 `got ip`。复位还是停在这里。DHCP 没完成，USB 口也断了。
+- COM4 是板子自己的 USB（`303A:1001`）。Light Sleep 会把这个口挂死。`idf.py flash` 报 `Could not open COM4`，原文是「连到系统上的设备没有发挥作用」。关掉软件、结束进程都不会给 USB 重新上电。
+- 要烧录：拔掉 USB，按住 BOOT，插上，点 RST，松开 BOOT，再 `idf.py -p COM4 flash`。写完若监视器停在 `boot:0x0 (DOWNLOAD)` 和 `waiting for download`，是 BOOT 还按着。松开 BOOT，只按 RST，程序才会跑。
+- `sdkconfig` 里打开 `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`。USB 还连着电脑时，芯片拿着不许 Light Sleep 的锁，监视器不会断。所以插着线看不到 `entering light sleep`。拔掉 USB 才会真的打盹。
+
+### 怎样算通过
+
+- 按 RST：`版本 2.0`，`NVS读取到SSID，直连...`，`got ip`，`Set ps type: 1`，`light sleep enabled`，`subscribe esp32/viola/ota`。
+- 再等大约 90 秒：`wifi: ip=` 和温度 JSON 各约 3 次，间隔 30 秒，每次发布都有 `MQTT_EVENT_PUBLISHED`。`retry` 不要一直增加。
+- MQTTX 连 `test.mosquitto.org:1883`，订阅 `esp32/viola/status`，应收到 `{"temp": ...}`。
+- 再按一次 RST，仍是直连，不用 EspTouch。不要为了这次测试去 `erase-flash`。
