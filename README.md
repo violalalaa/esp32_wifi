@@ -237,7 +237,7 @@ OTA 失败时设备回到上一份能启动的固件，不会变砖。`esp_https
 
 ### 这次测到的日志
 
-- 配网：`TYPE: ESPTOUCH`，`ssid: viola`，`pswd: 55555555`，然后 `MY_WIFI: got ssid:viola`，`wifi:connected with viola`。
+- 配网：`TYPE: ESPTOUCH`，`ssid: `，`pswd: `，然后 `MY_WIFI: got ssid:`，`wifi:connected with `。
 - 再按 RST：应打印 `NVS读取到SSID，直连...`，不再进入 SmartConfig。
 - 要重做第一次配网：`idf.py -p COM4 erase-flash` 会把 `wifi_cfg` 一起清掉。擦完若刷 `invalid header: 0xffffffff`，按住 BOOT，点 RST，松开 BOOT，再 flash。
 
